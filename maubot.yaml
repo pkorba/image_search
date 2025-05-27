@@ -1,0 +1,7 @@
+maubot: 0.1.0
+id: com.github.pkorba.image_search
+version: 1.0.0
+license: MIT
+modules:
+  - image_search
+main_class: ImageSearchBot
