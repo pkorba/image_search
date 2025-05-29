@@ -1,7 +1,9 @@
 maubot: 0.1.0
 id: com.github.pkorba.image_search
-version: 1.0.0
+version: 1.0.1
 license: MIT
 modules:
   - image_search
+dependencies:
+  - brotli>=1.1.0
 main_class: ImageSearchBot
