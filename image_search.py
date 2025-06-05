@@ -3,6 +3,14 @@ import filetype
 from maubot import Plugin, MessageEvent
 from maubot.handlers import command
 from mautrix.types import MediaMessageEventContent, MessageType, ImageInfo
+from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
+from typing import Type
+
+
+class Config(BaseProxyConfig):
+  def do_update(self, helper: ConfigUpdateHelper) -> None:
+    helper.copy("region")
+    helper.copy("safesearch")
 
 
 class ImageSearchBot(Plugin):
@@ -13,6 +21,10 @@ class ImageSearchBot(Plugin):
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:139.0) Gecko/20100101 Firefox/139.0",
         "referer": "https://duckduckgo.com/"
     }
+
+    async def start(self) -> None:
+        await super().start()
+        self.config.load_and_update()
 
     @command.new(name="i", help="Get the most relevant result from DuckDuckGo Image Search")
     @command.argument("query", pass_raw=True, required=True)
@@ -62,12 +74,12 @@ class ImageSearchBot(Plugin):
 
         # Proceed to get first image URL from the results
         params = {
-            "l": "wt-wt",  # region: wt-wt, us-en, uk-en, ru-ru; "wt-wt" - no region
+            "l": self.get_region(),  # region
             "o": "json",  # request json
             "q": query,  # keywords
             "vqd": token,  # DDG search token
             "f": ",,,,,", # ignore other image parameters: timelimit, size, color, type_image, layout, license_image
-            "p": "1",  # safe search (1 moderate, -1 off)
+            "p": self.get_safesearch(),  # safe search
             "1": "-1"  # ads off
         }
         url += "i.js"
@@ -111,3 +123,89 @@ class ImageSearchBot(Plugin):
         except Exception as e:
             self.log.error(f"Uploading image to Matrix server: Unknown error: {e}")
         return None
+
+    def get_safesearch(self) -> str:
+        safesearch_base = {
+            "on": "1",
+            "off": "-1"
+        }
+        return safesearch_base.get(self.config["safesearch"], safesearch_base["on"])
+
+    def get_region(self) -> str:
+        regions = [
+            "xa-ar",  # Arabia
+            "xa-en",  # Arabia (en)
+            "ar-es",  # Argentina
+            "au-en",  # Australia
+            "at-de",  # Austria
+            "be-fr",  # Belgium (fr)
+            "be-nl",  # Belgium (nl)
+            "br-pt",  # Brazil
+            "bg-bg",  # Bulgaria
+            "ca-en",  # Canada
+            "ca-fr",  # Canada (fr)
+            "ct-ca",  # Catalan
+            "cl-es",  # Chile
+            "cn-zh",  # China
+            "co-es",  # Colombia
+            "hr-hr",  # Croatia
+            "cz-cs",  # Czech Republic
+            "dk-da",  # Denmark
+            "ee-et",  # Estonia
+            "fi-fi",  # Finland
+            "fr-fr",  # France
+            "de-de",  # Germany
+            "gr-el",  # Greece
+            "hk-tzh",  # Hong Kong
+            "hu-hu",  # Hungary
+            "in-en",  # India
+            "id-id",  # Indonesia
+            "id-en",  # Indonesia (en)
+            "ie-en",  # Ireland
+            "il-he",  # Israel
+            "it-it",  # Italy
+            "jp-jp",  # Japan
+            "kr-kr",  # Korea
+            "lv-lv",  # Latvia
+            "lt-lt",  # Lithuania
+            "xl-es",  # Latin America
+            "my-ms",  # Malaysia
+            "my-en",  # Malaysia (en)
+            "mx-es",  # Mexico
+            "nl-nl",  # Netherlands
+            "nz-en",  # New Zealand
+            "no-no",  # Norway
+            "pe-es",  # Peru
+            "ph-en",  # Philippines
+            "ph-tl",  # Philippines (tl)
+            "pl-pl",  # Poland
+            "pt-pt",  # Portugal
+            "ro-ro",  # Romania
+            "ru-ru",  # Russia
+            "sg-en",  # Singapore
+            "sk-sk",  # Slovak Republic
+            "sl-sl",  # Slovenia
+            "za-en",  # South Africa
+            "es-es",  # Spain
+            "se-sv",  # Sweden
+            "ch-de",  # Switzerland (de)
+            "ch-fr",  # Switzerland (fr)
+            "ch-it",  # Switzerland (it)
+            "tw-tzh",  # Taiwan
+            "th-th",  # Thailand
+            "tr-tr",  # Turkey
+            "ua-uk",  # Ukraine
+            "uk-en",  # United Kingdom
+            "us-en",  # United States
+            "ue-es",  # United States (es)
+            "ve-es",  # Venezuela
+            "vn-vi",  # Vietnam
+            "wt-wt",  # No region
+        ]
+        if self.config["region"] in regions:
+            return self.config["region"]
+        return "wt-wt"
+
+    @classmethod
+    def get_config_class(cls) -> Type[BaseProxyConfig]:
+        return Config
