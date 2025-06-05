@@ -1,5 +1,5 @@
 import aiohttp
-import mimetypes
+import filetype
 from maubot import Plugin, MessageEvent
 from maubot.handlers import command
 from mautrix.types import MediaMessageEventContent, MessageType, ImageInfo
@@ -11,7 +11,6 @@ class ImageSearchBot(Plugin):
         "accept-encoding": "gzip, deflate, br, zstd",
         "accept-language": "pl,en-US;q=0.7,en;q=0.3",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:139.0) Gecko/20100101 Firefox/139.0",
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "referer": "https://duckduckgo.com/"
     }
 
@@ -24,7 +23,7 @@ class ImageSearchBot(Plugin):
             await evt.respond("Usage: !i <query>")
             return
 
-        url = await self.image_search(query)
+        url = await self.get_image_url(query)
         if not url:
             await evt.reply(f"Failed to find results for *{query}*")
             return
@@ -35,12 +34,12 @@ class ImageSearchBot(Plugin):
         else:
             await evt.reply(f"Failed to download image for *{query}*")
 
-    async def image_search(self, query: str) -> str:
+    async def get_image_url(self, query: str) -> str:
         url = "https://duckduckgo.com/"
 
         # First make a request to above URL, and parse out the 'vqd'
         # This is a special token, which should be used in the subsequent request
-        self.log.info("Hitting DuckDuckGo for token")
+        self.log.debug("Hitting DuckDuckGo for token")
         params = {
             'q': query
         }
@@ -85,23 +84,25 @@ class ImageSearchBot(Plugin):
             # Download image from external source
             response = await self.http.get(url, headers=ImageSearchBot.headers, raise_for_status=True)
             data = await response.read()
-            content_type = response.content_type
-            extension = mimetypes.guess_extension(content_type)
+            content_type = filetype.guess(data)
+            if not content_type:
+                self.log.error("Failed to determine file type")
+                return None
             # Upload image to Matrix server
             uri = await self.client.upload_media(
                 data=data,
-                mime_type=content_type,
-                filename=f"image{extension}",
+                mime_type=content_type.mime,
+                filename=f"image.{content_type.extension}",
                 size=len(data))
             # Prepare a message with the image
             content = MediaMessageEventContent(
                 url=uri,
-                body=f"image{extension}",
-                filename=f"image{extension}",
+                body=f"image.{content_type.extension}",
+                filename=f"image.{content_type.extension}",
                 msgtype=MessageType.IMAGE,
                 external_url=url,
                 info=ImageInfo(
-                    mimetype=content_type,
+                    mimetype=content_type.mime,
                     size=len(data)
                 ))
             return content
