@@ -2,15 +2,15 @@ import aiohttp
 import filetype
 from maubot import Plugin, MessageEvent
 from maubot.handlers import command
-from mautrix.types import MediaMessageEventContent, MessageType, ImageInfo
+from mautrix.types import MediaMessageEventContent, MessageType, ImageInfo, Format
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 from typing import Type
 
 
 class Config(BaseProxyConfig):
-  def do_update(self, helper: ConfigUpdateHelper) -> None:
-    helper.copy("region")
-    helper.copy("safesearch")
+    def do_update(self, helper: ConfigUpdateHelper) -> None:
+        helper.copy("region")
+        helper.copy("safesearch")
 
 
 class ImageSearchBot(Plugin):
@@ -78,7 +78,7 @@ class ImageSearchBot(Plugin):
             "o": "json",  # request json
             "q": query,  # keywords
             "vqd": token,  # DDG search token
-            "f": ",,,,,", # ignore other image parameters: timelimit, size, color, type_image, layout, license_image
+            "f": ",,,,,",  # ignore other image parameters: timelimit, size, color, type_image, layout, license_image
             "p": self.get_safesearch(),  # safe search
             "1": "-1"  # ads off
         }
@@ -107,9 +107,16 @@ class ImageSearchBot(Plugin):
                 filename=f"image.{content_type.extension}",
                 size=len(data))
             # Prepare a message with the image
+            html = (
+                "<blockquote>"
+                "<b><sub>Results from DuckDuckGo</sub></b>"
+                "</blockquote>"
+            )
             content = MediaMessageEventContent(
                 url=uri,
-                body=f"image.{content_type.extension}",
+                body=f"> **Results from DuckDuckGo**",
+                format=Format.HTML,
+                formatted_body=html,
                 filename=f"image.{content_type.extension}",
                 msgtype=MessageType.IMAGE,
                 external_url=url,
