@@ -100,6 +100,9 @@ class ImageSearchBot(Plugin):
             if not content_type:
                 self.log.error("Failed to determine file type")
                 return None
+            if content_type not in filetype.image_matchers:
+                self.log.error("Downloaded file is not an image")
+                return None
             # Upload image to Matrix server
             uri = await self.client.upload_media(
                 data=data,
