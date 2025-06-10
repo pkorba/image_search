@@ -14,13 +14,7 @@ class Config(BaseProxyConfig):
 
 
 class ImageSearchBot(Plugin):
-    headers = {
-        "Sec-GPC": "1",
-        "accept-encoding": "gzip, deflate, br, zstd",
-        "accept-language": "pl,en-US;q=0.7,en;q=0.3",
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:139.0) Gecko/20100101 Firefox/139.0",
-        "referer": "https://duckduckgo.com/"
-    }
+    retry_count = 3
 
     async def start(self) -> None:
         await super().start()
@@ -32,21 +26,56 @@ class ImageSearchBot(Plugin):
         await evt.mark_read()
         query = query.strip()
         if not query:
-            await evt.respond("Usage: !i <query>")
+            await evt.reply("Usage: !i <query>")
             return
+        query = "-instagram.com -facebook.com -fbsbx.com " + query
+        if len(query) > 499:
+            await evt.reply("Query is too long.")
 
-        url = await self.get_image_url(query)
-        if not url:
+        urls = await self.get_image_url(query)
+        if not urls:
             await evt.reply(f"Failed to find results for *{query}*")
             return
+        for i in range (0, self.retry_count):
+            content = await self.prepare_message(urls[i])
+            if content:
+                await evt.reply(content)
+            return
+        await evt.reply(f"Failed to download image for *{query}*")
 
-        content = await self.prepare_message(url)
-        if content:
-            await evt.reply(content)
-        else:
-            await evt.reply(f"Failed to download image for *{query}*")
+    async def get_image_url(self, query: str) -> list[str]:
+        vqd = await self.get_vqd(query)
+        if not vqd:
+            return []
+        # Proceed to get first image URL from the results
+        params = {
+            "l": self.get_region(),  # region
+            "o": "json",  # request json
+            "q": query,  # keywords
+            "vqd": vqd,  # DDG search token
+            "f": ",,,,,",  # ignore other image parameters: timelimit, size, color, type_image, layout, license_image
+            "p": self.get_safesearch(),  # safe search
+            "1": "-1"  # ads off
+        }
+        headers = {
+            "referer": "https://duckduckgo.com/",
+            'X-Requested-With': 'XMLHttpRequest'
+        }
+        url = "https://duckduckgo.com/i.js"
+        timeout = aiohttp.ClientTimeout(total=20)
+        results = []
+        try:
+            response = await self.http.get(url, headers=headers, timeout=timeout, params=params, raise_for_status=True)
+            data = await response.json(content_type=None)
+            if data.get("results", None):
+                end = self.retry_count if len(data["results"]) >= self.retry_count else len(data["results"])
+                for i in range(0, end):
+                    results.append(data["results"][i]["image"])
+        except aiohttp.ClientError as e:
+            self.log.error(f"Connection failed: {e}")
+        return []
 
-    async def get_image_url(self, query: str) -> str:
+    async def get_vqd(self, query: str) -> str:
         url = "https://duckduckgo.com/"
 
         # First make a request to above URL, and parse out the 'vqd'
@@ -64,7 +93,7 @@ class ImageSearchBot(Plugin):
                     start = res_text.index(c1) + c1_len
                     end = res_text.index(c2, start)
                     token = res_text[start:end]
-                    break
+                    return token
                 except ValueError:
                     self.log.error(f"Token parsing failed")
                     return ""
@@ -72,29 +101,17 @@ class ImageSearchBot(Plugin):
             self.log.error(f"Failed to obtain token. Connection failed: {e}")
             return ""
 
-        # Proceed to get first image URL from the results
-        params = {
-            "l": self.get_region(),  # region
-            "o": "json",  # request json
-            "q": query,  # keywords
-            "vqd": token,  # DDG search token
-            "f": ",,,,,",  # ignore other image parameters: timelimit, size, color, type_image, layout, license_image
-            "p": self.get_safesearch(),  # safe search
-            "1": "-1"  # ads off
-        }
-        url += "i.js"
-        try:
-            response = await self.http.get(url, headers=ImageSearchBot.headers, timeout=timeout, params=params, raise_for_status=True)
-            data = await response.json(content_type=None)
-            return data["results"][0]["image"] if data["results"] else ""
-        except aiohttp.ClientError as e:
-            self.log.error(f"Connection failed: {e}")
-        return ""
-
     async def prepare_message(self, url: str) -> MediaMessageEventContent | None:
+        headers = {
+            "Sec-GPC": "1",
+            "accept-encoding": "gzip, deflate, br, zstd",
+            "accept-language": "en,en-US;q=0.5",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:139.0) Gecko/20100101 Firefox/139.0"
+        }
+
         try:
             # Download image from external source
-            response = await self.http.get(url, headers=ImageSearchBot.headers, raise_for_status=True)
+            response = await self.http.get(url, headers=headers, raise_for_status=True)
             data = await response.read()
             content_type = filetype.guess(data)
             if not content_type:
@@ -139,7 +156,7 @@ class ImageSearchBot(Plugin):
             "on": "1",
             "off": "-1"
         }
-        return safesearch_base.get(self.config["safesearch"], safesearch_base["on"])
+        return safesearch_base.get(self.config.get("safesearch", "on"), safesearch_base["on"])
 
     def get_region(self) -> str:
         regions = [
@@ -212,7 +229,8 @@ class ImageSearchBot(Plugin):
             "vn-vi",  # Vietnam
             "wt-wt",  # No region
         ]
-        if self.config["region"] in regions:
+        region = self.config.get("region", "wt-wt")
+        if region in regions:
             return self.config["region"]
         return "wt-wt"
 
