@@ -1,2 +1,6 @@
 region: "wt-wt"
 safesearch: "on"
+blacklist:
+ - "instagram.com"
+ - "facebook.com"
+ - "lookaside.fbsbx.com"

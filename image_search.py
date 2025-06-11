@@ -1,3 +1,4 @@
+import asyncio
 import aiohttp
 import filetype
 from maubot import Plugin, MessageEvent
@@ -11,10 +12,17 @@ class Config(BaseProxyConfig):
     def do_update(self, helper: ConfigUpdateHelper) -> None:
         helper.copy("region")
         helper.copy("safesearch")
+        helper.copy("blacklist")
 
 
 class ImageSearchBot(Plugin):
     retry_count = 3
+    headers = {
+        "Sec-GPC": "1",
+        "accept-encoding": "gzip, deflate, br, zstd",
+        "accept-language": "en,en-US;q=0.5",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:139.0) Gecko/20100101 Firefox/139.0",
+    }
 
     async def start(self) -> None:
         await super().start()
@@ -28,8 +36,8 @@ class ImageSearchBot(Plugin):
         if not query:
             await evt.reply("Usage: !i <query>")
             return
-        query = "-instagram.com -facebook.com -fbsbx.com " + query
-        if len(query) > 499:
+        # Duckduckgo doesn't accept queries longer than 500 characters
+        if len(query) >= 500:
             await evt.reply("Query is too long.")
 
         urls = await self.get_image_url(query)
@@ -49,31 +57,39 @@ class ImageSearchBot(Plugin):
             return []
         # Proceed to get first image URL from the results
         params = {
-            "l": self.get_region(),  # region
-            "o": "json",  # request json
             "q": query,  # keywords
             "vqd": vqd,  # DDG search token
+            "l": self.get_region(),  # region
+            "o": "json",  # request json
             "f": ",,,,,",  # ignore other image parameters: timelimit, size, color, type_image, layout, license_image
             "p": self.get_safesearch(),  # safe search
             "1": "-1"  # ads off
         }
-        headers = {
-            "referer": "https://duckduckgo.com/",
-            'X-Requested-With': 'XMLHttpRequest'
-        }
+        headers = self.headers.copy()
+        headers["referer"] = "https://duckduckgo.com/"
+        headers["X-Requested-With"] = "XMLHttpRequest"
         url = "https://duckduckgo.com/i.js"
         timeout = aiohttp.ClientTimeout(total=20)
         results = []
+        blacklist = list(self.config["blacklist"]) if self.config.get("blacklist", None) else []
         try:
             response = await self.http.get(url, headers=headers, timeout=timeout, params=params, raise_for_status=True)
             data = await response.json(content_type=None)
             if data.get("results", None):
-                end = self.retry_count if len(data["results"]) >= self.retry_count else len(data["results"])
+                results_filtered = [result["image"] for result in data["results"] if not self.is_part_of_string(blacklist, result["image"])]
+                end = self.retry_count if len(results_filtered) >= self.retry_count else len(results_filtered)
                 for i in range(0, end):
-                    results.append(data["results"][i]["image"])
+                    results.append(results_filtered[i])
         except aiohttp.ClientError as e:
             self.log.error(f"Connection failed: {e}")
-        return []
+        return results
+
+    @staticmethod
+    def is_part_of_string(matches: list[str], haystack: str) -> bool:
+        for match in matches:
+            if match in haystack:
+                return True
+        return False
 
     async def get_vqd(self, query: str) -> str:
         url = "https://duckduckgo.com/"
@@ -102,18 +118,11 @@ class ImageSearchBot(Plugin):
             return ""
 
     async def prepare_message(self, url: str) -> MediaMessageEventContent | None:
-        headers = {
-            "Sec-GPC": "1",
-            "accept-encoding": "gzip, deflate, br, zstd",
-            "accept-language": "en,en-US;q=0.5",
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:139.0) Gecko/20100101 Firefox/139.0"
-        }
-
         try:
             # Download image from external source
-            response = await self.http.get(url, headers=headers, raise_for_status=True)
+            response = await self.http.get(url, headers=self.headers, raise_for_status=True)
             data = await response.read()
-            content_type = filetype.guess(data)
+            content_type = await asyncio.get_event_loop().run_in_executor(None, filetype.guess, data)
             if not content_type:
                 self.log.error("Failed to determine file type")
                 return None
@@ -132,7 +141,7 @@ class ImageSearchBot(Plugin):
                 "<b><sub>Results from DuckDuckGo</sub></b>"
                 "</blockquote>"
             )
-            content = MediaMessageEventContent(
+            return MediaMessageEventContent(
                 url=uri,
                 body=f"> **Results from DuckDuckGo**",
                 format=Format.HTML,
@@ -144,7 +153,6 @@ class ImageSearchBot(Plugin):
                     mimetype=content_type.mime,
                     size=len(data)
                 ))
-            return content
         except aiohttp.ClientError as e:
             self.log.error(f"Downloading image: Connection failed: {e}")
         except Exception as e:
