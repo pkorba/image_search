@@ -10,13 +10,26 @@ from typing import Type
 
 class Config(BaseProxyConfig):
     def do_update(self, helper: ConfigUpdateHelper) -> None:
-        helper.copy("region")
-        helper.copy("safesearch")
+        helper.copy("ddg_region")
+        helper.copy("ddg_safesearch")
+        helper.copy("searxng")
+        helper.copy("searxng_url")
+        helper.copy("searxng_port")
+        helper.copy("searxng_language")
+        helper.copy("searxng_safesearch")
         helper.copy("blacklist")
+
+class ImageData:
+    def __init__(self, url: str, width: int, height: int, engine: str) -> None:
+        self.url = url
+        self.width = width
+        self.height = height
+        self.engine = engine
 
 
 class ImageSearchBot(Plugin):
     retry_count = 3
+    blacklist: list[str] = []
     headers = {
         "Sec-GPC": "1",
         "accept-encoding": "gzip, deflate, br, zstd",
@@ -27,8 +40,9 @@ class ImageSearchBot(Plugin):
     async def start(self) -> None:
         await super().start()
         self.config.load_and_update()
+        self.blacklist = list(self.config["blacklist"]) if self.config.get("blacklist", None) else []
 
-    @command.new(name="i", help="Get the most relevant result from DuckDuckGo Image Search")
+    @command.new(name="i", aliases=["image"], help="Search for an image in DuckDuckGo or SearXNG")
     @command.argument("query", pass_raw=True, required=True)
     async def search(self, evt: MessageEvent, query: str) -> None:
         await evt.mark_read()
@@ -44,14 +58,19 @@ class ImageSearchBot(Plugin):
         if not urls:
             await evt.reply(f"Failed to find results for *{query}*")
             return
-        for i in range (0, self.retry_count):
-            content = await self.prepare_message(urls[i])
+        for url in urls:
+            content = await self.prepare_message(url)
             if content:
                 await evt.reply(content)
             return
         await evt.reply(f"Failed to download image for *{query}*")
 
-    async def get_image_url(self, query: str) -> list[str]:
+    async def get_image_url(self, query: str) -> list[ImageData]:
+        if self.get_sx():
+            return await self.get_image_url_sx(query)
+        return await self.get_image_url_ddg(query)
+
+    async def get_image_url_ddg(self, query: str) -> list[ImageData]:
         vqd = await self.get_vqd(query)
         if not vqd:
             return []
@@ -59,35 +78,40 @@ class ImageSearchBot(Plugin):
         params = {
             "q": query,  # keywords
             "vqd": vqd,  # DDG search token
-            "l": self.get_region(),  # region
+            "l": self.get_ddg_region(),  # region
             "o": "json",  # request json
             "f": ",,,,,",  # ignore other image parameters: timelimit, size, color, type_image, layout, license_image
-            "p": self.get_safesearch(),  # safe search
+            "p": self.get_ddg_safesearch(),  # safe search
             "1": "-1"  # ads off
         }
         headers = self.headers.copy()
         headers["referer"] = "https://duckduckgo.com/"
         headers["X-Requested-With"] = "XMLHttpRequest"
         url = "https://duckduckgo.com/i.js"
+        results: list[ImageData] = []
         timeout = aiohttp.ClientTimeout(total=20)
-        results = []
-        blacklist = list(self.config["blacklist"]) if self.config.get("blacklist", None) else []
         try:
             response = await self.http.get(url, headers=headers, timeout=timeout, params=params, raise_for_status=True)
             data = await response.json(content_type=None)
             if data.get("results", None):
-                results_filtered = [result["image"] for result in data["results"] if not self.is_part_of_string(blacklist, result["image"])]
+                results_filtered = [result for result in data["results"] if not self.is_part_of_string(self.blacklist, result["image"])]
                 end = self.retry_count if len(results_filtered) >= self.retry_count else len(results_filtered)
                 for i in range(0, end):
-                    results.append(results_filtered[i])
+                    image_result = ImageData(
+                        url=results_filtered[i]["image"],
+                        width=results_filtered[i].get("width", None),
+                        height=results_filtered[i].get("height", None),
+                        engine="DuckDuckGo"
+                    )
+                    results.append(image_result)
         except aiohttp.ClientError as e:
             self.log.error(f"Connection failed: {e}")
         return results
 
     @staticmethod
-    def is_part_of_string(matches: list[str], haystack: str) -> bool:
-        for match in matches:
-            if match in haystack:
+    def is_part_of_string(substrings: list[str], string: str) -> bool:
+        for substring in substrings:
+            if substring in string:
                 return True
         return False
 
@@ -117,10 +141,51 @@ class ImageSearchBot(Plugin):
             self.log.error(f"Failed to obtain token. Connection failed: {e}")
             return ""
 
-    async def prepare_message(self, url: str) -> MediaMessageEventContent | None:
+    async def get_image_url_sx(self, query: str) -> list[ImageData]:
+        params = {
+            "q": query,  # keywords
+            "categories": "images",  # perform image search
+            "language": self.get_sx_language(),  # language
+            "format": "json",  # request json
+            "safesearch": self.get_sx_safesearch(),  # safe search
+        }
+        url = self.get_sx_address()
+        results: list[ImageData] = []
+        timeout = aiohttp.ClientTimeout(total=20)
+        try:
+            response = await self.http.get(url, timeout=timeout, params=params, raise_for_status=True)
+            data = await response.json()
+        except aiohttp.ClientError as e:
+            self.log.error(f"Connection failed: {e}")
+            return []
+
+        if data.get("results", None):
+            results_filtered = [result for result in data["results"] if not self.is_part_of_string(self.blacklist, result["img_src"])]
+            end = self.retry_count if len(results_filtered) >= self.retry_count else len(results_filtered)
+            for i in range(0, end):
+                if results_filtered[i]["img_src"].startswith("//"):
+                    results_filtered[i]["img_src"] = results_filtered[i]["img_src"].replace("//", "https://")
+                resolution = results_filtered[i].get("resolution", "").split("×")
+                if len(resolution) == 2:
+                    width = int(resolution[0])
+                    height = int(resolution[1])
+                else:
+                    width = None
+                    height = None
+                engine = results_filtered[i].get("engine", "").replace(".", " ")
+                image_result = ImageData(
+                    url=results_filtered[i]["img_src"],
+                    width=width,
+                    height=height,
+                    engine=f"SearXNG ({'DuckDuckGo' if engine == 'duckduckgo' else engine.title()})"
+                )
+                results.append(image_result)
+        return results
+
+    async def prepare_message(self, image_data: ImageData) -> MediaMessageEventContent | None:
         try:
             # Download image from external source
-            response = await self.http.get(url, headers=self.headers, raise_for_status=True)
+            response = await self.http.get(image_data.url, headers=self.headers, raise_for_status=True)
             data = await response.read()
             content_type = await asyncio.get_event_loop().run_in_executor(None, filetype.guess, data)
             if not content_type:
@@ -137,21 +202,23 @@ class ImageSearchBot(Plugin):
                 size=len(data))
             # Prepare a message with the image
             html = (
-                "<blockquote>"
-                "<b><sub>Results from DuckDuckGo</sub></b>"
-                "</blockquote>"
+                f"<blockquote>"
+                f"<b><sub>Results from {image_data.engine}</sub></b>"
+                f"</blockquote>"
             )
             return MediaMessageEventContent(
                 url=uri,
-                body=f"> **Results from DuckDuckGo**",
+                body=f"> **Results from {image_data.engine}**",
                 format=Format.HTML,
                 formatted_body=html,
                 filename=f"image.{content_type.extension}",
                 msgtype=MessageType.IMAGE,
-                external_url=url,
+                external_url=image_data.url,
                 info=ImageInfo(
                     mimetype=content_type.mime,
-                    size=len(data)
+                    size=len(data),
+                    width=image_data.width,
+                    height=image_data.height
                 ))
         except aiohttp.ClientError as e:
             self.log.error(f"Downloading image: Connection failed: {e}")
@@ -159,14 +226,35 @@ class ImageSearchBot(Plugin):
             self.log.error(f"Uploading image to Matrix server: Unknown error: {e}")
         return None
 
-    def get_safesearch(self) -> str:
+    def get_ddg_safesearch(self) -> str:
         safesearch_base = {
             "on": "1",
             "off": "-1"
         }
-        return safesearch_base.get(self.config.get("safesearch", "on"), safesearch_base["on"])
+        return safesearch_base.get(self.config.get("ddg_safesearch", "on"), safesearch_base["on"])
 
-    def get_region(self) -> str:
+    def get_sx(self) -> bool:
+        sx_base = {
+            "on": True,
+            "off": False
+        }
+        return sx_base.get(self.config.get("searxng", "off"), sx_base["off"])
+
+    def get_sx_address(self) -> str:
+        url = self.config.get("searxng_url", "http://127.0.0.1")
+        port = self.config.get("searxng_port", 8080)
+        return f"{url}:{port}/search"
+
+    def get_sx_safesearch(self) -> str:
+        safesearch_base = {
+            "on": "2",
+            "moderate": "1",
+            "off": "0"
+        }
+        return safesearch_base.get(self.config.get("searxng_safesearch", "moderate"), safesearch_base["moderate"])
+
+    def get_ddg_region(self) -> str:
+        # https://duckduckgo.com/duckduckgo-help-pages/settings/params
         regions = [
             "xa-ar",  # Arabia
             "xa-en",  # Arabia (en)
@@ -237,10 +325,125 @@ class ImageSearchBot(Plugin):
             "vn-vi",  # Vietnam
             "wt-wt",  # No region
         ]
-        region = self.config.get("region", "wt-wt")
+        region = self.config.get("ddg_region", "wt-wt")
         if region in regions:
-            return self.config["region"]
+            return region
         return "wt-wt"
+
+    def get_sx_language(self) -> str:
+        # https://github.com/searxng/searxng/blob/master/searx/sxng_locales.py
+        languages = [
+            "af",  # Afrikaans
+            "ar",  # Arabic
+            "ar-SA",  # Arabic
+            "be",  # Belarusian
+            "bg",  # Bulgarian
+            "bg-BG",  # Bulgarian
+            "ca",  # Catalan
+            "cs",  # Czech
+            "cs-CZ",  # Czech
+            "cy",  # Welsh
+            "da",  # Danish
+            "da-DK",  # Danish
+            "de",  # German
+            "de-AT",  # German
+            "de-BE",  # German
+            "de-CH",  # German
+            "de-DE",  # German
+            "el",  # Greek
+            "el-GR",  # Greek
+            "en",  # English
+            "en-AU",  # English
+            "en-CA",  # English
+            "en-GB",  # English
+            "en-IE",  # English
+            "en-IN",  # English
+            "en-NZ",  # English
+            "en-PH",  # English
+            "en-PK",  # English
+            "en-SG",  # English
+            "en-US",  # English
+            "en-ZA",  # English
+            "es",  # Spanish
+            "es-AR",  # Spanish
+            "es-CL",  # Spanish
+            "es-CO",  # Spanish
+            "es-ES",  # Spanish
+            "es-MX",  # Spanish
+            "es-PE",  # Spanish
+            "et",  # Estonian
+            "et-EE",  # Estonian
+            "eu",  # Basque
+            "fa",  # Persian
+            "fi",  # Finnish
+            "fi-FI",  # Finnish
+            "fr",  # French
+            "fr-BE",  # French
+            "fr-CA",  # French
+            "fr-CH",  # French
+            "fr-FR",  # French
+            "ga",  # Irish
+            "gd",  # Scottish Gaelic
+            "gl",  # Galician
+            "he",  # Hebrew
+            "hi",  # Hindi
+            "hr",  # Croatian
+            "hu",  # Hungarian
+            "hu-HU",  # Hungarian
+            "id",  # Indonesian
+            "id-ID",  # Indonesian
+            "is",  # Icelandic
+            "it",  # Italian
+            "it-CH",  # Italian
+            "it-IT",  # Italian
+            "ja",  # Japanese
+            "ja-JP",  # Japanese
+            "kn",  # Kannada
+            "ko",  # Korean
+            "ko-KR",  # Korean
+            "lt",  # Lithuanian
+            "lv",  # Latvian
+            "ml",  # Malayalam
+            "mr",  # Marathi
+            "nb",  # Norwegian Bokmål
+            "nb-NO",  # Norwegian Bokmål
+            "nl",  # Dutch
+            "nl-BE",  # Dutch
+            "nl-NL",  # Dutch
+            "pl",  # Polish
+            "pl-PL",  # Polish
+            "pt",  # Portuguese
+            "pt-BR",  # Portuguese
+            "pt-PT",  # Portuguese
+            "ro",  # Romanian
+            "ro-RO",  # Romanian
+            "ru",  # Russian
+            "ru-RU",  # Russian
+            "sk",  # Slovak
+            "sl",  # Slovenian
+            "sq",  # Albanian
+            "sv",  # Swedish
+            "sv-SE",  # Swedish
+            "ta",  # Tamil
+            "te",  # Telugu
+            "th",  # Thai
+            "th-TH",  # Thai
+            "tr",  # Turkish
+            "tr-TR",  # Turkish
+            "uk",  # Ukrainian
+            "ur",  # Urdu
+            "vi",  # Vietnamese
+            "vi-VN",  # Vietnamese
+            "zh",  # Chinese
+            "zh-CN",  # Chinese
+            "zh-HK",  # Chinese
+            "zh-TW",  # Chinese
+            "all"  # All languages
+        ]
+        lang = self.config.get("searxng_language", "all")
+        if lang in languages:
+            return lang
+        return "all"
 
     @classmethod
     def get_config_class(cls) -> Type[BaseProxyConfig]:

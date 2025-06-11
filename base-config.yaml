@@ -1,5 +1,10 @@
-region: "wt-wt"
-safesearch: "on"
+ddg_region: "wt-wt"
+ddg_safesearch: "on"
+searxng: "off"
+searxng_url: "http://127.0.0.1"
+searxng_port: 8080
+searxng_language: "all"
+searxng_safesearch: "moderate"
 blacklist:
  - "instagram.com"
  - "facebook.com"
