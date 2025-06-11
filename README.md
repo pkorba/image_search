@@ -2,7 +2,7 @@
 
 A maubot for Matrix messaging that performs an image search on user's behalf using [DuckDuckGo](https://duckduckgo.com/) or [SearXNG](https://docs.searxng.org/) instance and uploads the best matching result as a response to the user's message.
 
-![bot_image_search](https://github.com/user-attachments/assets/e8d8b98d-9dc9-4480-8eff-a9714e8a6697)
+![bot_image_search](https://github.com/user-attachments/assets/928df90f-a354-4d98-97f9-7caf8e7aa3ca)
 
 
 ## Usage
