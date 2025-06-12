@@ -19,6 +19,7 @@ class Config(BaseProxyConfig):
         helper.copy("searxng_safesearch")
         helper.copy("blacklist")
 
+
 class ImageData:
     def __init__(self, url: str, width: int, height: int, engine: str) -> None:
         self.url = url
@@ -41,6 +42,7 @@ class ImageSearchBot(Plugin):
         await super().start()
         self.config.load_and_update()
         self.blacklist = list(self.config["blacklist"]) if self.config.get("blacklist", None) else []
+        self.log.info(f"Using {'SearXNG' if self.get_sx() else 'DuckDuckGo'} backend.")
 
     @command.new(name="i", aliases=["image"], help="Search for an image in DuckDuckGo or SearXNG")
     @command.argument("query", pass_raw=True, required=True)
@@ -48,7 +50,9 @@ class ImageSearchBot(Plugin):
         await evt.mark_read()
         query = query.strip()
         if not query:
-            await evt.reply("Usage: !i <query>")
+            await evt.reply("**Usage:**  \n"
+                            "!i <query>  \n"
+                            "!image <query>")
             return
         # Duckduckgo doesn't accept queries longer than 500 characters
         if len(query) >= 500:
@@ -93,9 +97,9 @@ class ImageSearchBot(Plugin):
         try:
             response = await self.http.get(url, headers=headers, timeout=timeout, params=params, raise_for_status=True)
             data = await response.json(content_type=None)
-            if data.get("results", None):
+            if data and data.get("results", None):
                 results_filtered = [result for result in data["results"] if not self.is_part_of_string(self.blacklist, result["image"])]
-                end = self.retry_count if len(results_filtered) >= self.retry_count else len(results_filtered)
+                end = min(self.retry_count, len(results_filtered))
                 for i in range(0, end):
                     image_result = ImageData(
                         url=results_filtered[i]["image"],
@@ -117,16 +121,14 @@ class ImageSearchBot(Plugin):
 
     async def get_vqd(self, query: str) -> str:
         url = "https://duckduckgo.com/"
-
-        # First make a request to above URL, and parse out the 'vqd'
+        # Make a request to above URL, and parse out the 'vqd'
         # This is a special token, which should be used in the subsequent request
-        self.log.debug("Hitting DuckDuckGo for token")
         params = {
             'q': query
         }
         timeout = aiohttp.ClientTimeout(total=20)
         try:
-            response = await self.http.post(url, data=params, timeout=timeout, raise_for_status=True)
+            response = await self.http.get(url, params=params, timeout=timeout, raise_for_status=True)
             res_text = await response.text()
             for c1, c1_len, c2 in (("vqd=\"", 5, "\""), ("vqd=", 4, "&"), ("vqd='", 5, "'")):
                 try:
@@ -159,11 +161,12 @@ class ImageSearchBot(Plugin):
             self.log.error(f"Connection failed: {e}")
             return []
 
-        if data.get("results", None):
+        if data and data.get("results", None):
             results_filtered = [result for result in data["results"] if not self.is_part_of_string(self.blacklist, result["img_src"])]
-            end = self.retry_count if len(results_filtered) >= self.retry_count else len(results_filtered)
+            end = min(self.retry_count, len(results_filtered))
             for i in range(0, end):
                 if results_filtered[i]["img_src"].startswith("//"):
+                    # Some urls in results are missing protocol (e.g. imgur)
                     results_filtered[i]["img_src"] = results_filtered[i]["img_src"].replace("//", "https://")
                 resolution = results_filtered[i].get("resolution", "").split("×")
                 if len(resolution) == 2:
@@ -221,9 +224,9 @@ class ImageSearchBot(Plugin):
                     height=image_data.height
                 ))
         except aiohttp.ClientError as e:
-            self.log.error(f"Downloading image: Connection failed: {e}")
+            self.log.error(f"Downloading image - connection failed: {e}")
         except Exception as e:
-            self.log.error(f"Uploading image to Matrix server: Unknown error: {e}")
+            self.log.error(f"Uploading image to Matrix server - unknown error: {e}")
         return None
 
     def get_ddg_safesearch(self) -> str:
@@ -325,7 +328,7 @@ class ImageSearchBot(Plugin):
             "vn-vi",  # Vietnam
             "wt-wt",  # No region
         ]
-        region = self.config.get("ddg_region", "wt-wt")
+        region = self.config.get("ddg_region", "wt-wt").lower()
         if region in regions:
             return region
         return "wt-wt"
