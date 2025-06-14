@@ -48,26 +48,28 @@ class ImageSearchBot(Plugin):
     @command.argument("query", pass_raw=True, required=True)
     async def search(self, evt: MessageEvent, query: str) -> None:
         await evt.mark_read()
-        query = query.strip()
+        # Remove characters that result in search engine redirecting to external domain
+        bang = "!!" if self.get_sx() else "!"
+        query = query.strip().replace(bang, "").replace("\\", "")
         if not query:
-            await evt.reply("**Usage:**  \n"
-                            "!i <query>  \n"
-                            "!image <query>")
+            await evt.reply("> **Usage:**  \n"
+                            "> !i <query>  \n"
+                            "> !image <query>")
             return
         # Duckduckgo doesn't accept queries longer than 500 characters
         if len(query) >= 500:
-            await evt.reply("Query is too long.")
+            await evt.reply("> Query is too long.")
 
         urls = await self.get_image_url(query)
         if not urls:
-            await evt.reply(f"Failed to find results for *{query}*")
+            await evt.reply(f"> Failed to find results for *{query}*")
             return
         for url in urls:
             content = await self.prepare_message(url)
             if content:
                 await evt.reply(content)
-            return
-        await evt.reply(f"Failed to download image for *{query}*")
+                return
+        await evt.reply(f"> Failed to download image for *{query}*")
 
     async def get_image_url(self, query: str) -> list[ImageData]:
         if self.get_sx():
@@ -98,7 +100,7 @@ class ImageSearchBot(Plugin):
             response = await self.http.get(url, headers=headers, timeout=timeout, params=params, raise_for_status=True)
             data = await response.json(content_type=None)
             if data and data.get("results", None):
-                results_filtered = [result for result in data["results"] if not self.is_part_of_string(self.blacklist, result["image"])]
+                results_filtered = [result for result in data["results"] if result.get("image", "") and not self.in_string(self.blacklist, result["image"])]
                 end = min(self.retry_count, len(results_filtered))
                 for i in range(0, end):
                     image_result = ImageData(
@@ -113,7 +115,7 @@ class ImageSearchBot(Plugin):
         return results
 
     @staticmethod
-    def is_part_of_string(substrings: list[str], string: str) -> bool:
+    def in_string(substrings: list[str], string: str) -> bool:
         for substring in substrings:
             if substring in string:
                 return True
@@ -162,7 +164,7 @@ class ImageSearchBot(Plugin):
             return []
 
         if data and data.get("results", None):
-            results_filtered = [result for result in data["results"] if not self.is_part_of_string(self.blacklist, result["img_src"])]
+            results_filtered = [result for result in data["results"] if result.get("img_src", "") and not self.in_string(self.blacklist, result["img_src"])]
             end = min(self.retry_count, len(results_filtered))
             for i in range(0, end):
                 if results_filtered[i]["img_src"].startswith("//"):
