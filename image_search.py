@@ -60,7 +60,7 @@ class ImageSearchBot(Plugin):
         if len(query) >= 500:
             await evt.reply("> Query is too long.")
 
-        urls = await self.get_image_url(query)
+        urls = await self.get_image_data(query)
         if not urls:
             await evt.reply(f"> Failed to find results for *{query}*")
             return
@@ -71,12 +71,22 @@ class ImageSearchBot(Plugin):
                 return
         await evt.reply(f"> Failed to download image for *{query}*")
 
-    async def get_image_url(self, query: str) -> list[ImageData]:
+    async def get_image_data(self, query: str) -> list[ImageData]:
+        """
+        Get list of image data objects
+        :param query: search query
+        :return: list of image data objects
+        """
         if self.get_sx():
-            return await self.get_image_url_sx(query)
-        return await self.get_image_url_ddg(query)
+            return await self.get_image_data_sx(query)
+        return await self.get_image_data_ddg(query)
 
-    async def get_image_url_ddg(self, query: str) -> list[ImageData]:
+    async def get_image_data_ddg(self, query: str) -> list[ImageData]:
+        """
+        Get list of image data objects from DuckDuckGo Image Search
+        :param query: search query
+        :return: list of image data objects
+        """
         vqd = await self.get_vqd(query)
         if not vqd:
             return []
@@ -116,12 +126,23 @@ class ImageSearchBot(Plugin):
 
     @staticmethod
     def in_string(substrings: list[str], string: str) -> bool:
+        """
+        Check if any of strings in the list is a substring of the given string.
+        :param substrings: list of substrings
+        :param string: string to compare against
+        :return: True if substring is in the given string else False
+        """
         for substring in substrings:
             if substring in string:
                 return True
         return False
 
     async def get_vqd(self, query: str) -> str:
+        """
+        Get special search token required by DuckDuckGo.
+        :param query: search query
+        :return: search token
+        """
         url = "https://duckduckgo.com/"
         # Make a request to above URL, and parse out the 'vqd'
         # This is a special token, which should be used in the subsequent request
@@ -145,7 +166,12 @@ class ImageSearchBot(Plugin):
             self.log.error(f"Failed to obtain token. Connection failed: {e}")
             return ""
 
-    async def get_image_url_sx(self, query: str) -> list[ImageData]:
+    async def get_image_data_sx(self, query: str) -> list[ImageData]:
+        """
+        Get list of image data objects from SearXNG Image Search
+        :param query: search query
+        :return: list of image data objects
+        """
         params = {
             "q": query,  # keywords
             "categories": "images",  # perform image search
@@ -188,6 +214,11 @@ class ImageSearchBot(Plugin):
         return results
 
     async def prepare_message(self, image_data: ImageData) -> MediaMessageEventContent | None:
+        """
+        Prepare a message by downloading an image from external source, uploading it to Matrix, and creating media message event content
+        :param image_data: object representing image data
+        :return: content of media message event
+        """
         try:
             # Download image from external source
             response = await self.http.get(image_data.url, headers=self.headers, raise_for_status=True)
@@ -232,6 +263,10 @@ class ImageSearchBot(Plugin):
         return None
 
     def get_ddg_safesearch(self) -> str:
+        """
+        Get safe search filter status from config for DuckDuckGo Image Search
+        :return: Value corresponding to safe search status
+        """
         safesearch_base = {
             "on": "1",
             "off": "-1"
@@ -239,6 +274,10 @@ class ImageSearchBot(Plugin):
         return safesearch_base.get(self.config.get("ddg_safesearch", "on"), safesearch_base["on"])
 
     def get_sx(self) -> bool:
+        """
+        Get SearXNG backend status
+        :return: SearXNG backend status
+        """
         sx_base = {
             "on": True,
             "off": False
@@ -246,11 +285,19 @@ class ImageSearchBot(Plugin):
         return sx_base.get(self.config.get("searxng", "off"), sx_base["off"])
 
     def get_sx_address(self) -> str:
+        """
+        Get SearXNG backend address
+        :return: SearXNG backend address
+        """
         url = self.config.get("searxng_url", "http://127.0.0.1")
         port = self.config.get("searxng_port", 8080)
         return f"{url}:{port}/search"
 
     def get_sx_safesearch(self) -> str:
+        """
+        Get safe search filter status from config for SearXNG Image Search
+        :return: Value corresponding to safe search status
+        """
         safesearch_base = {
             "on": "2",
             "moderate": "1",
@@ -259,6 +306,10 @@ class ImageSearchBot(Plugin):
         return safesearch_base.get(self.config.get("searxng_safesearch", "moderate"), safesearch_base["moderate"])
 
     def get_ddg_region(self) -> str:
+        """
+        Get search region from config for DuckDuckGo Image Search
+        :return: Search region
+        """
         # https://duckduckgo.com/duckduckgo-help-pages/settings/params
         regions = [
             "xa-ar",  # Arabia
@@ -336,6 +387,10 @@ class ImageSearchBot(Plugin):
         return "wt-wt"
 
     def get_sx_language(self) -> str:
+        """
+        Get search region from config for SearXNG Image Search
+        :return: Search region
+        """
         # https://github.com/searxng/searxng/blob/master/searx/sxng_locales.py
         languages = [
             "af",  # Afrikaans
