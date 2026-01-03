@@ -30,7 +30,7 @@ class ImageSearchBot(Plugin):
         "Sec-GPC": "1",
         "accept-encoding": "gzip, deflate, br, zstd",
         "accept-language": "en,en-US;q=0.5",
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:139.0) Gecko/20100101 Firefox/139.0",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0",
     }
 
     async def start(self) -> None:
@@ -93,7 +93,8 @@ class ImageSearchBot(Plugin):
             "o": "json",  # request json
             "f": ",,,,,",  # ignore other image parameters: timelimit, size, color, type_image, layout, license_image
             "p": self.get_ddg_safesearch(),  # safe search
-            "1": "-1"  # ads off
+            "1": "-1",  # ads off
+            "bj": "1"  # remove AI generated images from results
         }
         headers = self.headers.copy()
         headers["referer"] = "https://duckduckgo.com/"
@@ -119,8 +120,7 @@ class ImageSearchBot(Plugin):
             self.log.error(f"Connection failed: {e}")
         return results
 
-    @staticmethod
-    def in_string(substrings: list[str], string: str) -> bool:
+    def in_string(self, substrings: list[str], string: str) -> bool:
         """
         Check if any of strings in the list is a substring of the given string.
         :param substrings: list of substrings
@@ -155,7 +155,7 @@ class ImageSearchBot(Plugin):
                     token = res_text[start:end]
                     return token
                 except ValueError:
-                    self.log.error(f"Token parsing failed")
+                    self.log.error("Token parsing failed")
                     return ""
         except aiohttp.ClientError as e:
             self.log.error(f"Failed to obtain token. Connection failed: {e}")
@@ -214,8 +214,8 @@ class ImageSearchBot(Plugin):
 
     async def translate_engine(self, name: str) -> str:
         name_parts = name.split()
-        for i in range(0, len(name_parts)):
-            name_parts[i] = engines.engine_dict.get(name_parts[i], name_parts[i].title())
+        for i, part in enumerate(name_parts):
+            name_parts[i] = engines.engine_dict.get(part, part.title())
         return " ".join(name_parts)
 
     async def prepare_message(self, image_data: ImageData) -> MediaMessageEventContent | None:
