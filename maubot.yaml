@@ -5,7 +5,7 @@ license: MIT
 modules:
   - image_search
 dependencies:
-  - brotli >= 1.1.0
+  - brotli >= 1.2.0
   - filetype >= 1.2.0
 main_class: ImageSearchBot
 config: true
