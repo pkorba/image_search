@@ -1,14 +1,16 @@
-import asyncio
-import aiohttp
+from typing import Type
+
 import filetype
-from maubot import Plugin, MessageEvent
-from maubot.handlers import command
+from aiohttp import ClientError, ClientTimeout
+from mautrix.errors import MatrixResponseError
 from mautrix.types import MediaMessageEventContent, MessageType, ImageInfo, Format
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
-from .resources.datastructures import ImageData
+from maubot import Plugin, MessageEvent
+from maubot.handlers import command
+
 from .resources import engines
 from .resources import languages
-from typing import Type
+from .resources.datastructures import ImageData
 
 
 class Config(BaseProxyConfig):
@@ -30,21 +32,24 @@ class ImageSearchBot(Plugin):
         "Sec-GPC": "1",
         "accept-encoding": "gzip, deflate, br, zstd",
         "accept-language": "en,en-US;q=0.5",
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:153.0) "
+                      "Gecko/20100101 Firefox/153.0",
     }
 
     async def start(self) -> None:
         await super().start()
         self.config.load_and_update()
-        self.blacklist = list(self.config["blacklist"]) if self.config.get("blacklist", None) else []
-        self.log.info(f"Using {'SearXNG' if self.get_sx() else 'DuckDuckGo'} backend.")
+        self.blacklist = (
+            list(self.config["blacklist"]) if self.config.get("blacklist", None) else []
+        )
+        self.log.info(f"Using {'SearXNG' if self._get_sx() else 'DuckDuckGo'} backend.")
 
     @command.new(name="i", aliases=["image"], help="Search for an image in DuckDuckGo or SearXNG")
     @command.argument("query", pass_raw=True, required=True)
     async def search(self, evt: MessageEvent, query: str) -> None:
         await evt.mark_read()
         # Remove characters that result in search engine redirecting to external domain
-        bang = "!!" if self.get_sx() else "!"
+        bang = "!!" if self._get_sx() else "!"
         query = query.strip().replace(bang, "").replace("\\", "")
         if not query:
             await evt.reply("> **Usage:**  \n"
@@ -55,58 +60,75 @@ class ImageSearchBot(Plugin):
         if len(query) >= 500:
             await evt.reply("> Query is too long.")
 
-        urls = await self.get_image_data(query)
+        urls = await self._get_image_data(query)
         if not urls:
             await evt.reply(f"> Failed to find results for *{query}*")
             return
         for url in urls:
-            content = await self.prepare_message(url)
+            content = await self._prepare_message(url)
             if content:
                 await evt.reply(content)
                 return
         await evt.reply(f"> Failed to download image for *{query}*")
 
-    async def get_image_data(self, query: str) -> list[ImageData]:
+    async def _get_image_data(self, query: str) -> list[ImageData]:
         """
         Get list of image data objects
         :param query: search query
         :return: list of image data objects
         """
-        if self.get_sx():
-            return await self.get_image_data_sx(query)
-        return await self.get_image_data_ddg(query)
+        if self._get_sx():
+            return await self._get_image_data_sx(query)
+        return await self._get_image_data_ddg(query)
 
-    async def get_image_data_ddg(self, query: str) -> list[ImageData]:
+    async def _get_image_data_ddg(self, query: str) -> list[ImageData]:
         """
         Get list of image data objects from DuckDuckGo Image Search
         :param query: search query
         :return: list of image data objects
         """
-        vqd = await self.get_vqd(query)
+        vqd = await self._get_vqd(query)
         if not vqd:
             return []
         # Proceed to get first image URL from the results
         params = {
             "q": query,  # keywords
             "vqd": vqd,  # DDG search token
-            "l": self.get_ddg_region(),  # region
+            "l": self._get_ddg_region(),  # region
             "o": "json",  # request json
-            "f": ",,,,,",  # ignore other image parameters: timelimit, size, color, type_image, layout, license_image
-            "p": self.get_ddg_safesearch(),  # safe search
+            "f": ",,,,,",  # ignore: timelimit, size, color, type_image, layout, license_image
+            "p": self._get_ddg_safesearch(),  # safe search
             "1": "-1",  # ads off
             "bj": "1"  # remove AI generated images from results
         }
         headers = self.headers.copy()
-        headers["referer"] = "https://duckduckgo.com/"
         headers["X-Requested-With"] = "XMLHttpRequest"
+        headers["Accept"] = "*/*"
+        headers["Accept-Language"] = "en-US,en;q=0.5"
+        headers["Referer"] = "https://duckduckgo.com/"
+        headers["Connection"] = "keep-alive"
+        headers["Sec-Fetch-Dest"] = "empty"
+        headers["Sec-Fetch-Mode"] = "cors"
+        headers["Sec-Fetch-Site"] = "same-origin"
+        headers["Priority"] = "u=4"
         url = "https://duckduckgo.com/i.js"
         results: list[ImageData] = []
-        timeout = aiohttp.ClientTimeout(total=20)
+        timeout = ClientTimeout(total=20)
         try:
-            response = await self.http.get(url, headers=headers, timeout=timeout, params=params, raise_for_status=True)
+            response = await self.http.get(
+                url,
+                headers=headers,
+                timeout=timeout,
+                params=params,
+                raise_for_status=True
+            )
             data = await response.json(content_type=None)
             if data and data.get("results", None):
-                results_filtered = [result for result in data["results"] if result.get("image", "") and not self.in_string(self.blacklist, result["image"])]
+                results_filtered = [
+                    result for result in data["results"]
+                    if result.get("image", "")
+                    and not self._in_string(self.blacklist, result["image"])
+                ]
                 end = min(self.retry_count, len(results_filtered))
                 for i in range(0, end):
                     image_result = ImageData(
@@ -116,11 +138,11 @@ class ImageSearchBot(Plugin):
                         engine="DuckDuckGo"
                     )
                     results.append(image_result)
-        except aiohttp.ClientError as e:
+        except ClientError as e:
             self.log.error(f"Connection failed: {e}")
         return results
 
-    def in_string(self, substrings: list[str], string: str) -> bool:
+    def _in_string(self, substrings: list[str], string: str) -> bool:
         """
         Check if any of strings in the list is a substring of the given string.
         :param substrings: list of substrings
@@ -132,21 +154,27 @@ class ImageSearchBot(Plugin):
                 return True
         return False
 
-    async def get_vqd(self, query: str) -> str:
+    async def _get_vqd(self, query: str) -> str:
         """
         Get special search token required by DuckDuckGo.
         :param query: search query
         :return: search token
         """
-        url = "https://duckduckgo.com/"
+        url = "https://duckduckgo.com"
         # Make a request to above URL, and parse out the 'vqd'
         # This is a special token, which should be used in the subsequent request
         params = {
             'q': query
         }
-        timeout = aiohttp.ClientTimeout(total=20)
+        timeout = ClientTimeout(total=20)
         try:
-            response = await self.http.get(url, params=params, timeout=timeout, raise_for_status=True)
+            response = await self.http.get(
+                url,
+                headers=self.headers,
+                params=params,
+                timeout=timeout,
+                raise_for_status=True
+            )
             res_text = await response.text()
             for c1, c1_len, c2 in (("vqd=\"", 5, "\""), ("vqd=", 4, "&"), ("vqd='", 5, "'")):
                 try:
@@ -157,11 +185,11 @@ class ImageSearchBot(Plugin):
                 except ValueError:
                     self.log.error("Token parsing failed")
                     return ""
-        except aiohttp.ClientError as e:
+        except ClientError as e:
             self.log.error(f"Failed to obtain token. Connection failed: {e}")
             return ""
 
-    async def get_image_data_sx(self, query: str) -> list[ImageData]:
+    async def _get_image_data_sx(self, query: str) -> list[ImageData]:
         """
         Get list of image data objects from SearXNG Image Search
         :param query: search query
@@ -170,27 +198,35 @@ class ImageSearchBot(Plugin):
         params = {
             "q": query,  # keywords
             "categories": "images",  # perform image search
-            "language": self.get_sx_language(),  # language
+            "language": self._get_sx_language(),  # language
             "format": "json",  # request json
-            "safesearch": self.get_sx_safesearch(),  # safe search
+            "safesearch": self._get_sx_safesearch(),  # safe search
         }
-        url = self.get_sx_address()
         results: list[ImageData] = []
-        timeout = aiohttp.ClientTimeout(total=20)
         try:
-            response = await self.http.get(url, timeout=timeout, params=params, raise_for_status=True)
+            response = await self.http.get(
+                self._get_sx_address(),
+                timeout=ClientTimeout(total=20),
+                params=params,
+                raise_for_status=True
+            )
             data = await response.json()
-        except aiohttp.ClientError as e:
+        except ClientError as e:
             self.log.error(f"Connection failed: {e}")
             return []
 
         if data and data.get("results", None):
-            results_filtered = [result for result in data["results"] if result.get("img_src", "") and not self.in_string(self.blacklist, result["img_src"])]
-            end = min(self.retry_count, len(results_filtered))
-            for i in range(0, end):
+            results_filtered = [
+                result for result in data["results"]
+                if result.get("img_src", "")
+                and not self._in_string(self.blacklist, result["img_src"])
+            ]
+            for i in range(0, min(self.retry_count, len(results_filtered))):
                 if results_filtered[i]["img_src"].startswith("//"):
                     # Some urls in results are missing protocol (e.g. imgur)
-                    results_filtered[i]["img_src"] = results_filtered[i]["img_src"].replace("//", "https://")
+                    results_filtered[i]["img_src"] = (
+                        results_filtered[i]["img_src"].replace("//", "https://")
+                    )
                 resolution = results_filtered[i].get("resolution", [])
                 if resolution and "×" in resolution:
                     resolution = resolution.split("×")
@@ -207,28 +243,33 @@ class ImageSearchBot(Plugin):
                     url=results_filtered[i]["img_src"],
                     width=width,
                     height=height,
-                    engine=f"SearXNG ({await self.translate_engine(engine)})"
+                    engine=f"SearXNG ({await self._translate_engine(engine)})"
                 )
                 results.append(image_result)
         return results
 
-    async def translate_engine(self, name: str) -> str:
+    async def _translate_engine(self, name: str) -> str:
         name_parts = name.split()
         for i, part in enumerate(name_parts):
             name_parts[i] = engines.engine_dict.get(part, part.title())
         return " ".join(name_parts)
 
-    async def prepare_message(self, image_data: ImageData) -> MediaMessageEventContent | None:
+    async def _prepare_message(self, image_data: ImageData) -> MediaMessageEventContent | None:
         """
-        Prepare a message by downloading an image from external source, uploading it to Matrix, and creating media message event content
+        Prepare a message by downloading an image from external source, uploading it to Matrix,
+        and creating media message event content
         :param image_data: object representing image data
         :return: content of media message event
         """
         try:
             # Download image from external source
-            response = await self.http.get(image_data.url, headers=self.headers, raise_for_status=True)
+            response = await self.http.get(
+                image_data.url,
+                headers=self.headers,
+                raise_for_status=True
+            )
             data = await response.read()
-            content_type = await asyncio.get_event_loop().run_in_executor(None, filetype.guess, data)
+            content_type = await self.loop.run_in_executor(None, filetype.guess, data)
             if not content_type:
                 self.log.error("Failed to determine file type")
                 return None
@@ -260,14 +301,15 @@ class ImageSearchBot(Plugin):
                     size=len(data),
                     width=image_data.width,
                     height=image_data.height
-                ))
-        except aiohttp.ClientError as e:
+                )
+            )
+        except ClientError as e:
             self.log.error(f"Downloading image - connection failed: {e}")
-        except Exception as e:
+        except (ValueError, MatrixResponseError) as e:
             self.log.error(f"Uploading image to Matrix server - unknown error: {e}")
         return None
 
-    def get_ddg_safesearch(self) -> str:
+    def _get_ddg_safesearch(self) -> str:
         """
         Get safe search filter status from config for DuckDuckGo Image Search
         :return: Value corresponding to safe search status
@@ -278,7 +320,7 @@ class ImageSearchBot(Plugin):
         }
         return safesearch_base.get(self.config.get("ddg_safesearch", "on"), safesearch_base["on"])
 
-    def get_sx(self) -> bool:
+    def _get_sx(self) -> bool:
         """
         Get SearXNG backend status
         :return: SearXNG backend status
@@ -289,7 +331,7 @@ class ImageSearchBot(Plugin):
         }
         return sx_base.get(self.config.get("searxng", "off"), sx_base["off"])
 
-    def get_sx_address(self) -> str:
+    def _get_sx_address(self) -> str:
         """
         Get SearXNG backend address
         :return: SearXNG backend address
@@ -298,7 +340,7 @@ class ImageSearchBot(Plugin):
         port = self.config.get("searxng_port", 8080)
         return f"{url}:{port}/search"
 
-    def get_sx_safesearch(self) -> str:
+    def _get_sx_safesearch(self) -> str:
         """
         Get safe search filter status from config for SearXNG Image Search
         :return: Value corresponding to safe search status
@@ -308,9 +350,12 @@ class ImageSearchBot(Plugin):
             "moderate": "1",
             "off": "0"
         }
-        return safesearch_base.get(self.config.get("searxng_safesearch", "moderate"), safesearch_base["moderate"])
+        return safesearch_base.get(
+            self.config.get("searxng_safesearch", "moderate"),
+            safesearch_base["moderate"]
+        )
 
-    def get_ddg_region(self) -> str:
+    def _get_ddg_region(self) -> str:
         """
         Get search region from config for DuckDuckGo Image Search
         :return: Search region
@@ -320,7 +365,7 @@ class ImageSearchBot(Plugin):
             return region
         return "wt-wt"
 
-    def get_sx_language(self) -> str:
+    def _get_sx_language(self) -> str:
         """
         Get search region from config for SearXNG Image Search
         :return: Search region

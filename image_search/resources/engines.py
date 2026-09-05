@@ -7,5 +7,6 @@ engine_dict = {
     "svgrepo": "SVG Repo",
     "uxwing": "UXWing",
     "wallhaven": "wallhaven.cc",
-    "yacy": "YaCy"
+    "yacy": "YaCy",
+    "cse": "CSE"
 }
